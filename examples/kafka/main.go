@@ -10,16 +10,25 @@ import (
 
 func main() {
 	// Create a Kafka writer
-	sw, err := logharbour.NewKafkaWriter(logharbour.KafkaConfig{
-		Brokers: []string{"localhost:9092"},
-		Topic:   "log_topic",
-	}, 10)
-	if err != nil {
-		log.Fatalf("unable to create Kafka writer: %v", err)
+	// Define your Kafka configuration
+	kafkaConfig := logharbour.KafkaConfig{
+		Brokers: []string{"localhost:9092"}, // replace with your Kafka brokers
+		Topic:   "your_topic",               // replace with your Kafka topic
 	}
 
+	// Define the maximum number of connections in the pool
+	maxConnections := 10
+
+	pool, err := logharbour.NewKafkaConnectionPool(maxConnections, kafkaConfig)
+	if err != nil {
+		log.Fatalf("Failed to create Kafka connection pool: %v", err)
+	}
+
+	kafkaWriter := logharbour.NewKafkaWriter(pool, "log_topic")
+	// Use kafkaWriter with your LogHarbour instances
+
 	// Create a fallback writer that uses stdout as the fallback.
-	fallbackWriter := logharbour.NewFallbackWriter(sw, os.Stdout)
+	fallbackWriter := logharbour.NewFallbackWriter(kafkaWriter, os.Stdout)
 
 	// Create a logger context with the default priority.
 	lctx := logharbour.NewLoggerContext(logharbour.Info)
@@ -48,7 +57,7 @@ func main() {
 	}
 
 	// Close the Kafka writer when done
-	if err := sw.Close(); err != nil {
+	if err := kafkaWriter.Close(); err != nil {
 		log.Fatalf("failed to close Kafka writer: %v", err)
 	}
 }

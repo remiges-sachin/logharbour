@@ -1,9 +1,6 @@
 package logharbour
 
 import (
-	"errors"
-	"sync"
-
 	"github.com/IBM/sarama"
 )
 
@@ -23,26 +20,20 @@ type KafkaWriter interface {
 }
 
 type kafkaWriter struct {
-	producer sarama.SyncProducer
-	pool     *KafkaWriterPool
-	closed   bool
-	mu       sync.Mutex
-	topic    string
+	pool  *KafkaConnectionPool
+	topic string
 }
 
 func (kw *kafkaWriter) Write(p []byte) (n int, err error) {
-	writer, err := kw.pool.Get()
-	if err != nil {
-		return 0, err
-	}
-	defer kw.pool.Put(writer)
+	producer := kw.pool.GetConnection()
+	defer kw.pool.ReleaseConnection(producer)
 
 	msg := &sarama.ProducerMessage{
 		Topic: kw.topic,
 		Value: sarama.ByteEncoder(p),
 	}
 
-	_, _, err = writer.producer.SendMessage(msg)
+	_, _, err = producer.SendMessage(msg)
 	if err != nil {
 		return 0, err
 	}
@@ -50,97 +41,61 @@ func (kw *kafkaWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (kw *kafkaWriter) Flush() error {
+func (sw *kafkaWriter) Flush() error {
 	// Sarama does not have a Flush method, as it sends messages as soon as they are available.
 	return nil
 }
 
-func (kw *kafkaWriter) Configure(config KafkaConfig) error {
+func (sw *kafkaWriter) Configure(config KafkaConfig) error {
 	// Implement this method based on your requirements.
 	return nil
 }
 
 func (kw *kafkaWriter) Close() error {
-	kw.mu.Lock()
-	defer kw.mu.Unlock()
-
-	if kw.closed {
-		return nil
+	for i := 0; i < kw.pool.maxConnections; i++ {
+		producer := kw.pool.GetConnection()
+		if err := producer.Close(); err != nil {
+			return err
+		}
 	}
-
-	err := kw.producer.Close()
-	if err == nil {
-		kw.closed = true
-	}
-
-	return err
+	return nil
 }
 
-func NewKafkaWriter(config KafkaConfig, poolSize int) (KafkaWriter, error) {
-	writerPool, err := NewKafkaWriterPool(config, poolSize)
-	if err != nil {
-		return nil, err
+///// pool
+
+type KafkaConnectionPool struct {
+	connections    chan sarama.SyncProducer
+	maxConnections int
+}
+
+func NewKafkaConnectionPool(maxConnections int, config KafkaConfig) (*KafkaConnectionPool, error) {
+	pool := &KafkaConnectionPool{
+		connections:    make(chan sarama.SyncProducer, maxConnections),
+		maxConnections: maxConnections,
 	}
 
-	return &kafkaWriter{
-		pool:  writerPool,
-		topic: config.Topic,
-	}, nil
-}
-
-///////
-
-type KafkaWriterPool struct {
-	pool   chan *kafkaWriter
-	config KafkaConfig
-	mu     sync.Mutex
-}
-
-func NewKafkaWriterPool(config KafkaConfig, size int) (*KafkaWriterPool, error) {
-	pool := make(chan *kafkaWriter, size)
-	for i := 0; i < size; i++ {
+	for i := 0; i < maxConnections; i++ {
 		producer, err := sarama.NewSyncProducer(config.Brokers, nil)
 		if err != nil {
 			return nil, err
 		}
-
-		writer := &kafkaWriter{
-			producer: producer,
-			topic:    config.Topic,
-		}
-
-		pool <- writer
+		pool.connections <- producer
 	}
 
-	return &KafkaWriterPool{
-		pool:   pool,
-		config: config,
-	}, nil
+	return pool, nil
 }
 
-func (p *KafkaWriterPool) Get() (*kafkaWriter, error) {
-	select {
-	case writer := <-p.pool:
-		return writer, nil
-	default:
-		return nil, errors.New("no available Kafka writers")
+func NewKafkaWriter(pool *KafkaConnectionPool, topic string) KafkaWriter {
+	return &kafkaWriter{
+		pool:  pool,
+		topic: topic,
 	}
 }
 
-func (p *KafkaWriterPool) Put(writer *kafkaWriter) {
-	p.pool <- writer
+func (pool *KafkaConnectionPool) GetConnection() sarama.SyncProducer {
+	return <-pool.connections
 }
 
-func (p *KafkaWriterPool) Close() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	close(p.pool)
-	for writer := range p.pool {
-		if err := writer.Close(); err != nil {
-			return err
-		}
-	}
-
-	return nil
+func (pool *KafkaConnectionPool) ReleaseConnection(producer sarama.SyncProducer) {
+	pool.connections <- producer
 }
