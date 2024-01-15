@@ -10,20 +10,26 @@ import (
 )
 
 func main() {
-	nGoroutines := 100
+	nGoroutines := 10
 	nMessages := 100000
 	messagesPerGoroutine := nMessages / nGoroutines
 
 	// Initialize Kafka connection pool and LogHarbour logger
-	pool, err := logharbour.NewKafkaConnectionPool(100, logharbour.KafkaConfig{
-		Brokers: []string{"localhost:9092"},
-	})
+	kafkaConfig := logharbour.KafkaConfig{
+		Brokers:          []string{"localhost:9092"},
+		Topic:            "log_topic",
+		ReturnSuccesses:  new(bool),
+		CompressionLevel: new(int), // Set the desired compression level here
+	}
+	*kafkaConfig.CompressionLevel = 4 // Example: set compression level to 1
+	*kafkaConfig.ReturnSuccesses = true
+
+	pool, err := logharbour.NewKafkaConnectionPool(100, kafkaConfig)
 	if err != nil {
 		panic(fmt.Sprintf("unable to create Kafka connection pool: %v", err))
 	}
 
-	topic := "log_topic"
-	kafkaWriter := logharbour.NewKafkaWriter(pool, topic)
+	kafkaWriter := logharbour.NewKafkaWriter(pool, kafkaConfig.Topic)
 
 	// Assuming a function NewLoggerContext exists in your package
 	lctx := logharbour.NewLoggerContext(logharbour.Info)
